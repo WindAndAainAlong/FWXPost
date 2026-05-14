@@ -1,0 +1,543 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
+using PostProcessor.Core.IR;
+using PostProcessor.Core.Kinematics;
+
+namespace PostProcessor.Core.Templating;
+
+/// <summary>
+/// 上下文构建器：将 Motion/Tool/Spindle 等对象转为模板变量字典。
+/// 这里包含 3+2 旋转逻辑与 A/C 解算。
+/// </summary>
+internal static class TemplateContextFactory
+{
+    public static Dictionary<string, string> BuildHeaderContext(ToolpathProgram program)
+    {
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 程序名与路径名（通常相同）
+            ["ProgramName"] = program.ProgramName,
+            ["PathName"] = program.ProgramName,
+            ["ToolName"] = string.Empty
+        };
+
+        return dict;
+    }
+
+    public static Dictionary<string, string> BuildPathStartContext(ToolpathProgram program, PathStartBlock start)
+    {
+        var dict = BuildHeaderContext(program);
+        dict["PathName"] = start.PathName ?? string.Empty;
+        dict["ToolName"] = start.ToolName ?? string.Empty;
+        return dict;
+    }
+
+    public static Dictionary<string, string> BuildPathEndContext(ToolpathProgram program)
+    {
+        // END-OF-PATH 行本身没有额外信息，这里保留当前 ProgramName/PathName 即可。
+        // 若未来需要输出“离开/回零”等，可在模板里根据事件类型处理。
+        return BuildHeaderContext(program);
+    }
+
+    public static Dictionary<string, string> BuildToolChangeContext(ToolpathProgram program, ToolChangeBlock tool)
+    {
+        var dict = BuildHeaderContext(program);
+        // 换刀号/刀名（两者可能只有一个有效）
+        dict["ToolNumber"] = tool.ToolNumber.HasValue ? tool.ToolNumber.Value.ToString(CultureInfo.InvariantCulture) : string.Empty;
+        dict["ToolName"] = tool.ToolName ?? string.Empty;
+
+        // 模板直接用 ToolCall 输出，避免在模板里写复杂 IF
+        if (!string.IsNullOrWhiteSpace(dict["ToolName"]))
+        {
+            dict["ToolCall"] = "T=\"" + dict["ToolName"] + "\"";
+        }
+        else if (!string.IsNullOrWhiteSpace(dict["ToolNumber"]))
+        {
+            dict["ToolCall"] = "T" + dict["ToolNumber"];
+        }
+        else
+        {
+            dict["ToolCall"] = string.Empty;
+        }
+
+        return dict;
+    }
+
+    public static Dictionary<string, string> BuildSpindleContext(ToolpathProgram program, SpindleBlock spindle)
+    {
+        var dict = BuildHeaderContext(program);
+        // 主轴转速
+        if (spindle.Rpm.HasValue)
+        {
+            dict["SpindleRpm"] = spindle.Rpm.Value.ToString(CultureInfo.InvariantCulture);
+        }
+
+        // 主轴方向 -> M3/M4
+        dict["SpindleMCode"] = spindle.Direction switch
+        {
+            SpindleDirection.Clw => "M3",
+            SpindleDirection.Cclw => "M4",
+            _ => string.Empty
+        };
+
+        return dict;
+    }
+
+    public static Dictionary<string, string> BuildFeedContext(ToolpathProgram program, FeedBlock feed, OutputState state)
+    {
+        var dict = BuildHeaderContext(program);
+        // 当前进给
+        dict["FeedRate"] = Format(feed.FeedRate);
+        // 去重输出的 F 字段
+        dict["FField"] = OutputLineProcessor.UpdateFeedField(feed.FeedRate, ref state.LastFeed);
+        return dict;
+    }
+
+    /// <summary>
+    /// 孔循环开始上下文：仅提供参数，不主动修改 LastFeed（避免影响第一孔输出 F）。
+    /// </summary>
+    public static Dictionary<string, string> BuildCycleStartContext(ToolpathProgram program, HoleCycleStartBlock start, OutputState state)
+    {
+        var dict = BuildHeaderContext(program);
+
+        dict["CycleFamily"] = start.CycleFamily;
+        dict["CycleVariant"] = start.CycleVariant;
+
+        // 参数展开：生成 Cycle_RAPTO / Cycle_FEDTO / Cycle_MMPM ...
+        AddCycleParameters(dict, start.Parameters);
+
+        dict["CycleActive"] = "1";
+        dict["CycleInitialized"] = state.CycleInitialized ? "1" : "0";
+        return dict;
+    }
+
+    /// <summary>
+    /// 孔循环孔位上下文：
+    /// - 负责 A/C 解算（五轴或 3+2 锁轴）
+    /// - 负责 3+2 模式下坐标旋转
+    /// - 第一孔时输出进给（FField）并将 LastZ 更新为 RAPTO（因为模板会先定位到安全高度）
+    /// </summary>
+    public static Dictionary<string, string> BuildCycleHoleContext(ToolpathProgram program, HoleCycleHoleBlock hole, OutputState state, AxisMode axisMode, bool isFirstHole)
+    {
+        var dict = BuildHeaderContext(program);
+
+        var xOut = hole.X;
+        var yOut = hole.Y;
+        var zOut = hole.Z;
+
+        // 循环分类
+        dict["CycleFamily"] = state.CycleFamily;
+        dict["CycleVariant"] = state.CycleVariant;
+
+        // 循环参数（来自 state）
+        AddCycleParameters(dict, state.CycleParameters);
+        dict["CycleActive"] = state.CycleActive ? "1" : "0";
+        dict["CycleInitialized"] = state.CycleInitialized ? "1" : "0";
+        dict["IsFirstHole"] = isFirstHole ? "1" : "0";
+
+        // 第一孔：通常需要输出一次 F（示例：F250）
+        dict["FeedRate"] = state.CycleFeedRate.HasValue ? Format(state.CycleFeedRate.Value) : string.Empty;
+        dict["FField"] = isFirstHole ? OutputLineProcessor.UpdateFeedField(state.CycleFeedRate, ref state.LastFeed) : string.Empty;
+
+        // 刀轴向量（用于 3+2/五轴解算）
+        if (hole.ToolAxisI.HasValue)
+        {
+            dict["I"] = Format(hole.ToolAxisI.Value);
+        }
+        if (hole.ToolAxisJ.HasValue)
+        {
+            dict["J"] = Format(hole.ToolAxisJ.Value);
+        }
+        if (hole.ToolAxisK.HasValue)
+        {
+            dict["K"] = Format(hole.ToolAxisK.Value);
+        }
+
+        // A/C 输出字段初始化
+        dict["A"] = string.Empty;
+        dict["C"] = string.Empty;
+        dict["AField"] = string.Empty;
+        dict["CField"] = string.Empty;
+
+        state.AxisJustLocked = false;
+
+        // 1) A/C 解算
+        if (hole.ToolAxisI.HasValue && hole.ToolAxisJ.HasValue && hole.ToolAxisK.HasValue)
+        {
+            if (AcHeadKinematics.TrySolveAc(hole.ToolAxisI.Value, hole.ToolAxisJ.Value, hole.ToolAxisK.Value, out var aDeg, out var cDeg))
+            {
+                if (axisMode == AxisMode.FiveAxis)
+                {
+                    // 五轴：每孔输出 A/C，并做连续化（避免 C 大跳变）
+                    if (state.LastC.HasValue)
+                    {
+                        MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
+                    }
+                    dict["A"] = Format(aDeg);
+                    dict["C"] = Format(cDeg);
+                    dict["AField"] = "A" + Format(aDeg);
+                    dict["CField"] = "C" + Format(cDeg);
+                    state.LastA = aDeg;
+                    state.LastC = cDeg;
+                }
+                else if (axisMode == AxisMode.ThreePlusTwo)
+                {
+                    // 3+2：首次锁轴时输出一次 A/C
+                    if (!state.AxisLocked)
+                    {
+                        dict["A"] = Format(aDeg);
+                        dict["C"] = Format(cDeg);
+                        dict["AField"] = "A" + Format(aDeg);
+                        dict["CField"] = "C" + Format(cDeg);
+                        state.LastA = aDeg;
+                        state.LastC = cDeg;
+                        state.AxisLocked = true;
+                        state.AxisJustLocked = true;
+                    }
+                }
+            }
+        }
+
+        // 2) 3+2 模式下进行 AC 逆旋转（孔位同样需要旋转到机床坐标）
+        if (axisMode == AxisMode.ThreePlusTwo && state.AxisLocked)
+        {
+            var aAngle = state.LastA ?? 0.0;
+            var cAngle = state.LastC ?? 0.0;
+            RotateByAcInverse(ref xOut, ref yOut, ref zOut, aAngle, cAngle);
+        }
+
+        // 3) 输出最终 XY（孔位通常只用到 X/Y）
+        dict["X"] = Format(xOut);
+        dict["Y"] = Format(yOut);
+        dict["HoleZ"] = Format(zOut); // 预留：某些循环可能需要孔底/起始Z
+
+        // 去重字段（用于后续孔位只输出变化的轴）
+        dict["XField"] = OutputLineProcessor.UpdateAxisField("X", xOut, ref state.LastX);
+        dict["YField"] = OutputLineProcessor.UpdateAxisField("Y", yOut, ref state.LastY);
+
+        // 第一孔初始化：模板通常会先定位到 Z=RAPTO
+        if (isFirstHole)
+        {
+            state.LastZ = state.CycleRapTo;
+        }
+        dict["CycleZField"] = "Z" + Format(state.CycleRapTo);
+
+        // 第一孔的“执行孔”行需要强制输出 X/Y（因为上一行已定位到同一 X/Y）
+        dict["XFieldForce"] = "X" + Format(xOut);
+        dict["YFieldForce"] = "Y" + Format(yOut);
+
+        // 3+2 状态标记（供模板 IF 判断）
+        dict["AxisLocked"] = state.AxisLocked ? "1" : "0";
+        dict["AxisJustLocked"] = state.AxisJustLocked ? "1" : "0";
+
+        return dict;
+    }
+
+    public static Dictionary<string, string> BuildCycleEndContext(ToolpathProgram program, HoleCycleEndBlock end, OutputState state)
+    {
+        var dict = BuildHeaderContext(program);
+        dict["CycleFamily"] = state.CycleFamily;
+        dict["CycleVariant"] = state.CycleVariant;
+        AddCycleParameters(dict, state.CycleParameters);
+        dict["CycleActive"] = state.CycleActive ? "1" : "0";
+        dict["CycleInitialized"] = state.CycleInitialized ? "1" : "0";
+        return dict;
+    }
+
+    /// <summary>
+    /// 将循环参数字典展开到模板上下文：
+    /// - 数值会格式化为 4 位小数
+    /// - 生成变量名：Cycle_XXX（例如 Cycle_RAPTO, Cycle_FEDTO, Cycle_MMPM）
+    /// </summary>
+    private static void AddCycleParameters(Dictionary<string, string> dict, IReadOnlyDictionary<string, string> parameters)
+    {
+        if (parameters == null)
+        {
+            return;
+        }
+
+        foreach (var kv in parameters)
+        {
+            var key = (kv.Key ?? string.Empty).Trim().ToUpperInvariant();
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            var valueText = (kv.Value ?? string.Empty).Trim();
+            if (double.TryParse(valueText, NumberStyles.Float, CultureInfo.InvariantCulture, out var num))
+            {
+                dict["Cycle_" + key] = Format(num);
+            }
+            else
+            {
+                dict["Cycle_" + key] = valueText;
+            }
+        }
+
+        // 兼容常用字段（便于模板写起来更顺手）
+        if (dict.TryGetValue("Cycle_RAPTO", out var rapto))
+        {
+            dict["CycleRapto"] = rapto;
+        }
+        if (dict.TryGetValue("Cycle_FEDTO", out var fedto))
+        {
+            dict["CycleFedto"] = fedto;
+        }
+        if (dict.TryGetValue("Cycle_MMPM", out var mmpm))
+        {
+            dict["CycleFeedRate"] = mmpm;
+        }
+    }
+
+    /// <summary>
+    /// 生成运动上下文：
+    /// 1) A/C 解算（五轴或 3+2 锁轴）
+    /// 2) 3+2 旋转后的 XYZ/IJ
+    /// 3) 去重字段（XField/YField/...）
+    /// </summary>
+    public static Dictionary<string, string> BuildMotionContext(ToolpathProgram program, MotionBlock motion, OutputState state, AxisMode axisMode)
+    {
+        var dict = BuildHeaderContext(program);
+
+        var xOut = motion.X;
+        var yOut = motion.Y;
+        var zOut = motion.Z;
+        var arcI = motion.ArcI;
+        var arcJ = motion.ArcJ;
+
+        // 进给值
+        if (motion.FeedRate.HasValue)
+        {
+            dict["FeedRate"] = Format(motion.FeedRate.Value);
+        }
+        // 去重输出的 F 字段
+        dict["FField"] = OutputLineProcessor.UpdateFeedField(motion.FeedRate, ref state.LastFeed);
+
+        // 刀轴向量（若模板需要输出 I/J/K）
+        if (motion.ToolAxisI.HasValue)
+        {
+            dict["I"] = Format(motion.ToolAxisI.Value);
+        }
+        if (motion.ToolAxisJ.HasValue)
+        {
+            dict["J"] = Format(motion.ToolAxisJ.Value);
+        }
+        if (motion.ToolAxisK.HasValue)
+        {
+            dict["K"] = Format(motion.ToolAxisK.Value);
+        }
+
+        // A/C 输出字段初始化
+        dict["A"] = string.Empty;
+        dict["C"] = string.Empty;
+        dict["AField"] = string.Empty;
+        dict["CField"] = string.Empty;
+
+        state.AxisJustLocked = false;
+
+        // 1) 先解算 A/C
+        if (motion.ToolAxisI.HasValue && motion.ToolAxisJ.HasValue && motion.ToolAxisK.HasValue)
+        {
+            if (AcHeadKinematics.TrySolveAc(motion.ToolAxisI.Value, motion.ToolAxisJ.Value, motion.ToolAxisK.Value, out var aDeg, out var cDeg))
+            {
+                if (axisMode == AxisMode.FiveAxis)
+                {
+                    // 五轴：每条都输出 A/C
+                    if (state.LastC.HasValue)
+                    {
+                        // A/C 连续化：在等效解 (A,C) 与 (-A,C+180) 中选最接近上一行 C 的方案
+                        MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
+                    }
+                    dict["A"] = Format(aDeg);
+                    dict["C"] = Format(cDeg);
+                    dict["AField"] = "A" + Format(aDeg);
+                    dict["CField"] = "C" + Format(cDeg);
+                    state.LastA = aDeg;
+                    state.LastC = cDeg;
+                }
+                else if (axisMode == AxisMode.ThreePlusTwo)
+                {
+                    // 3+2：只在首次锁轴时输出 A/C
+                    if (!state.AxisLocked)
+                    {
+                        dict["A"] = Format(aDeg);
+                        dict["C"] = Format(cDeg);
+                        dict["AField"] = "A" + Format(aDeg);
+                        dict["CField"] = "C" + Format(cDeg);
+                        state.LastA = aDeg;
+                        state.LastC = cDeg;
+                        state.AxisLocked = true;
+                        state.AxisJustLocked = true;
+                    }
+                }
+            }
+        }
+
+        // 2) 3+2 模式下进行 AC 逆旋转
+        if (axisMode == AxisMode.ThreePlusTwo && state.AxisLocked)
+        {
+            var aAngle = state.LastA ?? 0.0;
+            var cAngle = state.LastC ?? 0.0;
+            RotateByAcInverse(ref xOut, ref yOut, ref zOut, aAngle, cAngle);
+            if (arcI.HasValue || arcJ.HasValue)
+            {
+                // 圆弧 I/J 作为位移向量进行同样旋转
+                var ii = arcI ?? 0.0;
+                var jj = arcJ ?? 0.0;
+                var kk = 0.0;
+                RotateByAcInverse(ref ii, ref jj, ref kk, aAngle, cAngle);
+                arcI = ii;
+                arcJ = jj;
+            }
+        }
+
+        // 3) 输出最终 XYZ
+        dict["X"] = Format(xOut);
+        dict["Y"] = Format(yOut);
+        dict["Z"] = Format(zOut);
+
+        // 3) 去重字段
+        dict["XField"] = OutputLineProcessor.UpdateAxisField("X", xOut, ref state.LastX);
+        dict["YField"] = OutputLineProcessor.UpdateAxisField("Y", yOut, ref state.LastY);
+        dict["ZField"] = OutputLineProcessor.UpdateAxisField("Z", zOut, ref state.LastZ);
+
+        // 圆弧参数
+        dict["ArcI"] = arcI.HasValue ? Format(arcI.Value) : string.Empty;
+        dict["ArcJ"] = arcJ.HasValue ? Format(arcJ.Value) : string.Empty;
+
+        // 3+2 状态标记
+        dict["AxisLocked"] = state.AxisLocked ? "1" : "0";
+        dict["AxisJustLocked"] = state.AxisJustLocked ? "1" : "0";
+
+        return dict;
+    }
+
+    /// <summary>
+    /// 事件上下文：提供 EventType/EventSeq/EventMotionType。
+    /// </summary>
+    public static void AddEventContext(Dictionary<string, string> context, string eventType, int seq, string? motionType = null)
+    {
+        context["EventType"] = eventType;
+        context["EventSeq"] = seq.ToString(CultureInfo.InvariantCulture);
+        if (!string.IsNullOrWhiteSpace(motionType))
+        {
+            context["EventMotionType"] = motionType;
+        }
+    }
+
+    /// <summary>
+    /// 轴模式上下文：AxisMode 与 IsThreeAxis/IsThreePlusTwo/IsFiveAxis。
+    /// </summary>
+    public static void AddAxisModeContext(Dictionary<string, string> context, AxisMode axisMode)
+    {
+        context["AxisMode"] = axisMode.ToString();
+        context["IsThreeAxis"] = axisMode == AxisMode.ThreeAxis ? "1" : "0";
+        context["IsThreePlusTwo"] = axisMode == AxisMode.ThreePlusTwo ? "1" : "0";
+        context["IsFiveAxis"] = axisMode == AxisMode.FiveAxis ? "1" : "0";
+    }
+
+    /// <summary>
+    /// AC 逆旋转：先绕 C（Z）后绕 A（X）。
+    /// 用于将刀轨从刀轴系转回机床坐标系。
+    /// </summary>
+    private static void RotateByAcInverse(ref double x, ref double y, ref double z, double aDeg, double cDeg)
+    {
+        var cRad = -cDeg * Math.PI / 180.0;
+        var cosC = Math.Cos(cRad);
+        var sinC = Math.Sin(cRad);
+        var x1 = x * cosC - y * sinC;
+        var y1 = x * sinC + y * cosC;
+        var z1 = z;
+
+        var aRad = -aDeg * Math.PI / 180.0;
+        var cosA = Math.Cos(aRad);
+        var sinA = Math.Sin(aRad);
+        var y2 = y1 * cosA - z1 * sinA;
+        var z2 = y1 * sinA + z1 * cosA;
+
+        x = x1;
+        y = y2;
+        z = z2;
+    }
+
+    /// <summary>
+    /// A/C 连续化：
+    /// - 等效解 1：A,C
+    /// - 等效解 2：-A, C+180
+    /// 选择与上一行 C 最接近的解，避免大角度跳变。
+    /// </summary>
+    private static void MakeContinuousAc(ref double aDeg, ref double cDeg, double lastC)
+    {
+        var c1 = NormalizeCWithinRange(MakeContinuousC(cDeg, lastC), lastC);
+        var c2 = NormalizeCWithinRange(MakeContinuousC(cDeg + 180.0, lastC), lastC);
+        var delta1 = Math.Abs(c1 - lastC);
+        var delta2 = Math.Abs(c2 - lastC);
+
+        if (delta2 < delta1)
+        {
+            aDeg = -aDeg;
+            cDeg = c2;
+        }
+        else
+        {
+            cDeg = c1;
+        }
+    }
+
+    private static double MakeContinuousC(double cDeg, double lastC)
+    {
+        var adjusted = cDeg;
+        while (adjusted - lastC > 180.0)
+        {
+            adjusted -= 360.0;
+        }
+        while (adjusted - lastC < -180.0)
+        {
+            adjusted += 360.0;
+        }
+        return adjusted;
+    }
+
+    private static double NormalizeCWithinRange(double cDeg, double lastC)
+    {
+        var c1 = cDeg - 360.0;
+        var c2 = cDeg;
+        var c3 = cDeg + 360.0;
+
+        var best = c2;
+        var bestDelta = double.MaxValue;
+
+        ChooseCandidate(ref best, ref bestDelta, c1, lastC);
+        ChooseCandidate(ref best, ref bestDelta, c2, lastC);
+        ChooseCandidate(ref best, ref bestDelta, c3, lastC);
+
+        return best;
+    }
+
+    private static void ChooseCandidate(ref double best, ref double bestDelta, double candidate, double lastC)
+    {
+        if (candidate < -360.0 || candidate > 360.0)
+        {
+            return;
+        }
+
+        var delta = Math.Abs(candidate - lastC);
+        if (delta < bestDelta)
+        {
+            bestDelta = delta;
+            best = candidate;
+        }
+    }
+
+    private static string Format(double value)
+    {
+        if (Math.Abs(value) < 0.0000005)
+        {
+            value = 0.0;
+        }
+
+        return value.ToString("0.0000", CultureInfo.InvariantCulture);
+    }
+}

@@ -1,0 +1,64 @@
+﻿<Window x:Class="PostProcessor.Wpf.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Fwx Post Processor" Height="700" Width="1000">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="Input File" FontWeight="SemiBold" Margin="0,0,0,6"/>
+            <DockPanel Grid.Row="0" Grid.Column="0" Margin="0,22,12,0" LastChildFill="True">
+                <Button Width="90" Margin="8,0,0,0" DockPanel.Dock="Right" Content="Browse..." Click="BrowseInput_Click"/>
+                <TextBox x:Name="InputPathTextBox" MinHeight="28" VerticalContentAlignment="Center"/>
+            </DockPanel>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="Output File" FontWeight="SemiBold" Margin="0,8,0,6"/>
+            <DockPanel Grid.Row="1" Grid.Column="0" Margin="0,30,12,0" LastChildFill="True">
+                <Button Width="90" Margin="8,0,0,0" DockPanel.Dock="Right" Content="Browse..." Click="BrowseOutput_Click"/>
+                <TextBox x:Name="OutputPathTextBox" MinHeight="28" VerticalContentAlignment="Center"/>
+            </DockPanel>
+
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="Template" FontWeight="SemiBold" Margin="12,0,0,6"/>
+            <DockPanel Grid.Row="0" Grid.Column="1" Margin="12,22,0,0" LastChildFill="True">
+                <Button Width="90" Margin="8,0,0,0" DockPanel.Dock="Right" Content="Browse..." Click="BrowseTemplate_Click"/>
+                <TextBox x:Name="TemplatePathTextBox" MinHeight="28" VerticalContentAlignment="Center"/>
+            </DockPanel>
+
+            <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="12,18,0,0">
+                <Button Width="110" Margin="0,0,8,0" Content="Preview" Click="PreviewNc_Click"/>
+                <Button Width="110" Content="Save" Click="SaveNc_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <GroupBox Grid.Row="1" Header="NC Preview" VerticalAlignment="Stretch">
+            <TextBox x:Name="NcPreviewTextBox"
+                     Margin="6"
+                     FontFamily="Consolas"
+                     FontSize="12"
+                     AcceptsReturn="True"
+                     AcceptsTab="True"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     IsReadOnly="True"
+                     TextWrapping="NoWrap"
+                     VerticalAlignment="Stretch"
+                     HorizontalAlignment="Stretch"/>
+        </GroupBox>
+    </Grid>
+</Window>
