@@ -51,6 +51,9 @@ public sealed class ClsParser
         var holeCycleActive = false;
         // 工艺阶段去重：避免连续重复输出同一阶段
         ProcessPhaseType? lastPhase = null;
+        // 当前阶段上下文：用于给后续运动块打标签
+        var currentPhase = ProcessPhaseType.Unknown;
+        
 
         foreach (var rawLine in lines)
         {
@@ -70,6 +73,9 @@ public sealed class ClsParser
             {
                 if (lastPhase != phaseType)
                 {
+                    
+                    currentPhase = phaseType;
+
                     blocks.Add(new ProcessPhaseBlock
                     {
                         Sequence = sequence++,
@@ -260,7 +266,7 @@ public sealed class ClsParser
                 if (circle != null && lastPoint != null)
                 {
                     // CIRCLE + GOTO => 圆弧
-                    var arc = BuildArcBlock(sequence++, circle.Value, lastPoint.Value, pos, currentFeed, lastToolAxis);
+                    var arc = BuildArcBlock(sequence++, circle.Value, lastPoint.Value, pos, currentFeed, lastToolAxis, currentPhase);
                     blocks.Add(arc);
                     circle = null;
                 }
@@ -271,6 +277,8 @@ public sealed class ClsParser
                     {
                         Sequence = sequence++,
                         Kind = kind,
+                        PhaseType = currentPhase,
+                     
                         X = pos.X,
                         Y = pos.Y,
                         Z = pos.Z,
@@ -655,7 +663,9 @@ public sealed class ClsParser
         (double X, double Y, double Z) start,
         (double X, double Y, double Z) end,
         double? feed,
-        (double I, double J, double K)? axis)
+        (double I, double J, double K)? axis,
+        ProcessPhaseType phaseType
+       )
     {
         var v1 = (X: start.X - circle.Cx, Y: start.Y - circle.Cy, Z: start.Z - circle.Cz);
         var v2 = (X: end.X - circle.Cx, Y: end.Y - circle.Cy, Z: end.Z - circle.Cz);
@@ -671,6 +681,7 @@ public sealed class ClsParser
         {
             Sequence = sequence,
             Kind = MotionKind.Arc,
+            PhaseType = phaseType,
             ArcClockwise = !ccw,
             X = end.X,
             Y = end.Y,

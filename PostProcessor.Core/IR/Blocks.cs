@@ -22,6 +22,14 @@ public enum SpindleDirection
 public sealed record MotionBlock : IRBlock
 {
     public MotionKind Kind { get; init; }
+    /// <summary>
+    /// 该运动块所属工艺阶段（进刀/切削/退刀...）。
+    /// </summary>
+    public ProcessPhaseType PhaseType { get; init; } = ProcessPhaseType.Unknown;
+    /// <summary>
+    /// 阶段组号（例如第几组进刀）；0 表示未分组。
+    /// </summary>
+    public int PhaseGroupId { get; init; }
     public double X { get; init; }
     public double Y { get; init; }
     public double Z { get; init; }
