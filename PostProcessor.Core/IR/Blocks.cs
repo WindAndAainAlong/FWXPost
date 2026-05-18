@@ -76,6 +76,24 @@ public sealed record PathEndBlock : IRBlock
 {
 }
 
+public enum ProcessPhaseType
+{
+    Unknown,
+    JinDao,
+    QieXue,
+    TuiDao,
+    Zhuanyi
+}
+
+/// <summary>
+/// 工艺阶段标记块：用于在 NC 中输出“进刀/切削/退刀”等语义提示。
+/// </summary>
+public sealed record ProcessPhaseBlock : IRBlock
+{
+    public ProcessPhaseType PhaseType { get; init; } = ProcessPhaseType.Unknown;
+    public string RawText { get; init; } = string.Empty;
+}
+
 /// <summary>
 /// 孔加工循环开始（对应 NX: CYCLE/DRILL ... / CYCLE/BORE ... / CYCLE/TAP ...）。
 /// 说明：这是“循环定义”，真正的孔位由后续的 HoleCycleHoleBlock 提供。

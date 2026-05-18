@@ -43,6 +43,18 @@ M5
 A{{A}} C{{C}}
 CYCLE800(0,"",0,0,0,0,0,{{A}},0,{{C}},0,0,0,0,0)
 
+[EVENT_PHASE]
+; PHASE {{PhaseText}}
+
+[EVENT_PHASE_JINDAO]
+; 进刀
+
+[EVENT_PHASE_QIEXUE]
+; 切削
+
+[EVENT_PHASE_TUIDAO]
+; 退刀
+
 [LINEAR]
 G1 {{XField}} {{YField}} {{ZField}} {{AField}} {{CField}} {{FField}}
 

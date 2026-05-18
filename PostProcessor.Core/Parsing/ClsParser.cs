@@ -49,6 +49,8 @@ public sealed class ClsParser
 
         // 孔循环：CYCLE/* ... 到 CYCLE/OFF
         var holeCycleActive = false;
+        // 工艺阶段去重：避免连续重复输出同一阶段
+        ProcessPhaseType? lastPhase = null;
 
         foreach (var rawLine in lines)
         {
@@ -61,6 +63,21 @@ public sealed class ClsParser
             if (line.Length == 0)
             {
                 continue;
+            }
+
+            // 识别工艺阶段关键字（jindao/qiexue/tuidao 等），插入阶段块供模板渲染
+            if (TryParseProcessPhase(line, out var phaseType))
+            {
+                if (lastPhase != phaseType)
+                {
+                    blocks.Add(new ProcessPhaseBlock
+                    {
+                        Sequence = sequence++,
+                        PhaseType = phaseType,
+                        RawText = line
+                    });
+                    lastPhase = phaseType;
+                }
             }
 
             // TOOL PATH/... ：开始一个新的刀轨段（Operation），同时记录刀具名
@@ -272,6 +289,36 @@ public sealed class ClsParser
         }
 
         return new ToolpathProgram(programName, blocks);
+    }
+
+    private static bool TryParseProcessPhase(string line, out ProcessPhaseType phaseType)
+    {
+        phaseType = ProcessPhaseType.Unknown;
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var text = line.ToLowerInvariant();
+
+        // 英文拼音/常见中文关键词
+        if (text.Contains("jindao", StringComparison.Ordinal) || text.Contains("进刀", StringComparison.Ordinal))
+        {
+            phaseType = ProcessPhaseType.JinDao;
+            return true;
+        }
+        if (text.Contains("qiexue", StringComparison.Ordinal) || text.Contains("切削", StringComparison.Ordinal))
+        {
+            phaseType = ProcessPhaseType.QieXue;
+            return true;
+        }
+        if (text.Contains("tuidao", StringComparison.Ordinal) || text.Contains("退刀", StringComparison.Ordinal))
+        {
+            phaseType = ProcessPhaseType.TuiDao;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>

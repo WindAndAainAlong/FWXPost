@@ -94,6 +94,21 @@ internal static class TemplateContextFactory
         return dict;
     }
 
+    public static Dictionary<string, string> BuildProcessPhaseContext(ToolpathProgram program, ProcessPhaseBlock phase)
+    {
+        var dict = BuildHeaderContext(program);
+        dict["PhaseType"] = phase.PhaseType.ToString();
+        dict["PhaseRawText"] = phase.RawText ?? string.Empty;
+        dict["PhaseText"] = phase.PhaseType switch
+        {
+            ProcessPhaseType.JinDao => "进刀",
+            ProcessPhaseType.QieXue => "切削",
+            ProcessPhaseType.TuiDao => "退刀",
+            _ => "工艺阶段"
+        };
+        return dict;
+    }
+
     /// <summary>
     /// 孔循环开始上下文：仅提供参数，不主动修改 LastFeed（避免影响第一孔输出 F）。
     /// </summary>

@@ -194,6 +194,23 @@ public sealed class TemplatePostProcessor
                     AppendEventSection(output, template, "FEED", context);
                     break;
                 }
+                case ProcessPhaseBlock phase:
+                {
+                    var context = TemplateContextFactory.BuildProcessPhaseContext(program, phase);
+                    TemplateContextFactory.AddAxisModeContext(context, activeAxisMode);
+
+                    var phaseSection = phase.PhaseType switch
+                    {
+                        ProcessPhaseType.JinDao => "PHASE_JINDAO",
+                        ProcessPhaseType.QieXue => "PHASE_QIEXUE",
+                        ProcessPhaseType.TuiDao => "PHASE_TUIDAO",
+                        _ => "PHASE"
+                    };
+
+                    TemplateContextFactory.AddEventContext(context, phaseSection, seq++, phaseSection);
+                    AppendEventSection(output, template, phaseSection, context);
+                    break;
+                }
                 case MotionBlock motion:
                 {
                     var context = TemplateContextFactory.BuildMotionContext(program, motion, state, activeAxisMode);
