@@ -189,6 +189,11 @@ internal static class TemplateContextFactory
                     {
                         MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
                     }
+                    else
+                    {
+                        // 首点无历史姿态时，先在等效解中选到 A0/C0 最短路径
+                        SelectInitialAcBranch(ref aDeg, ref cDeg);
+                    }
                     dict["A"] = Format(aDeg);
                     dict["C"] = Format(cDeg);
                     dict["AField"] = "A" + Format(aDeg);
@@ -201,6 +206,10 @@ internal static class TemplateContextFactory
                     // 3+2：首次锁轴时输出一次 A/C
                     if (!state.AxisLocked)
                     {
+                        if (!state.LastA.HasValue || !state.LastC.HasValue)
+                        {
+                            SelectInitialAcBranch(ref aDeg, ref cDeg);
+                        }
                         dict["A"] = Format(aDeg);
                         dict["C"] = Format(cDeg);
                         dict["AField"] = "A" + Format(aDeg);
@@ -365,6 +374,11 @@ internal static class TemplateContextFactory
                         // A/C 连续化：在等效解 (A,C) 与 (-A,C+180) 中选最接近上一行 C 的方案
                         MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
                     }
+                    else
+                    {
+                        // 首点无历史姿态时，先在等效解中选到 A0/C0 最短路径
+                        SelectInitialAcBranch(ref aDeg, ref cDeg);
+                    }
                     dict["A"] = Format(aDeg);
                     dict["C"] = Format(cDeg);
                     dict["AField"] = "A" + Format(aDeg);
@@ -377,6 +391,10 @@ internal static class TemplateContextFactory
                     // 3+2：只在首次锁轴时输出 A/C
                     if (!state.AxisLocked)
                     {
+                        if (!state.LastA.HasValue || !state.LastC.HasValue)
+                        {
+                            SelectInitialAcBranch(ref aDeg, ref cDeg);
+                        }
                         dict["A"] = Format(aDeg);
                         dict["C"] = Format(cDeg);
                         dict["AField"] = "A" + Format(aDeg);
@@ -543,6 +561,35 @@ internal static class TemplateContextFactory
         {
             bestDelta = delta;
             best = candidate;
+        }
+    }
+
+    /// <summary>
+    /// 首点镜像选解：在 (A,C) 与 (-A,C+180) 中选择到参考姿态 A0/C0 的最短路径。
+    /// </summary>
+    private static void SelectInitialAcBranch(ref double aDeg, ref double cDeg)
+    {
+        const double refA = 0.0;
+        const double refC = 0.0;
+        const double weightA = 2.0;
+        const double weightC = 1.0;
+
+        var c1 = NormalizeCWithinRange(cDeg, refC);
+        var a1 = aDeg;
+        var cost1 = weightA * Math.Abs(a1 - refA) + weightC * Math.Abs(c1 - refC);
+
+        var c2 = NormalizeCWithinRange(cDeg + 180.0, refC);
+        var a2 = -aDeg;
+        var cost2 = weightA * Math.Abs(a2 - refA) + weightC * Math.Abs(c2 - refC);
+
+        if (cost2 < cost1)
+        {
+            aDeg = a2;
+            cDeg = c2;
+        }
+        else
+        {
+            cDeg = c1;
         }
     }
 
