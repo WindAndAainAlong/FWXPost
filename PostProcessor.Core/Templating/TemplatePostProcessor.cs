@@ -196,6 +196,24 @@ public sealed class TemplatePostProcessor
                 }
                 case ProcessPhaseBlock phase:
                 {
+                    // 层间 AC 重置：跟踪工序层切换
+                    if (_options.EnableLayerReset)
+                    {
+                        switch (phase.PhaseType)
+                        {
+                            case ProcessPhaseType.JinDao:
+                                state.LayerIndex++;
+                                state.NeedsSaveLayerRef = true;
+                                break;
+                            case ProcessPhaseType.QieXue:
+                                state.NeedsQieXueInit = true;
+                                state.PrevSegmentR = null;     // F 自适应：每个切削层独立判断
+                                state.OriginalSegmentF = null;
+                                state.FReduced = false;
+                                break;
+                        }
+                    }
+
                     var context = TemplateContextFactory.BuildProcessPhaseContext(program, phase);
                     TemplateContextFactory.AddAxisModeContext(context, activeAxisMode);
 
@@ -213,7 +231,8 @@ public sealed class TemplatePostProcessor
                 }
                 case MotionBlock motion:
                 {
-                    var context = TemplateContextFactory.BuildMotionContext(program, motion, state, activeAxisMode);
+                    var context = TemplateContextFactory.BuildMotionContext(program, motion, state, activeAxisMode,
+                        enableFAdaptive: _options.EnableFAdaptive);
                     TemplateContextFactory.AddAxisModeContext(context, activeAxisMode);
                     var baseSection = motion.Kind switch
                     {
@@ -286,6 +305,13 @@ public sealed class TemplatePostProcessor
         state.CycleRapTo = 0.0;
         state.CycleFedTo = 0.0;
         state.CycleFeedRate = null;
+
+        // 层间 AC 重置状态：跨 PATH 时也需重置，避免不同工序的层状态互相污染
+        state.LayerIndex = 0;
+        state.NeedsSaveLayerRef = false;
+        state.NeedsQieXueInit = false;
+        state.CurrentLayerRefA = null;
+        state.CurrentLayerRefC = null;
     }
 
     private static double? TryGetParamDouble(IReadOnlyDictionary<string, string> parameters, string key)
@@ -435,64 +461,7 @@ public sealed class TemplatePostProcessor
     }
 
     private static AxisMode AnalyzeAxisMode(ToolpathProgram program)
-    {
-        (double I, double J, double K)? first = null;
-        foreach (var block in program.Blocks)
-        {
-            // 轴模式判断需要依赖“刀轴向量”。
-            // 运动块与钻孔孔位块都可能携带 IJK。
-            double? i = null;
-            double? j = null;
-            double? k = null;
-            switch (block)
-            {
-                case MotionBlock motion:
-                    i = motion.ToolAxisI;
-                    j = motion.ToolAxisJ;
-                    k = motion.ToolAxisK;
-                    break;
-                case HoleCycleHoleBlock hole:
-                    i = hole.ToolAxisI;
-                    j = hole.ToolAxisJ;
-                    k = hole.ToolAxisK;
-                    break;
-            }
-
-            if (!i.HasValue || !j.HasValue || !k.HasValue)
-            {
-                continue;
-            }
-
-            var current = (i.Value, j.Value, k.Value);
-            if (first == null)
-            {
-                first = current;
-                continue;
-            }
-
-            if (!NearlyEqual(first.Value.I, current.Item1) ||
-                !NearlyEqual(first.Value.J, current.Item2) ||
-                !NearlyEqual(first.Value.K, current.Item3))
-            {
-                return AxisMode.FiveAxis;
-            }
-        }
-
-        if (!first.HasValue)
-        {
-            return AxisMode.ThreeAxis;
-        }
-
-        if (AcHeadKinematics.TrySolveAc(first.Value.I, first.Value.J, first.Value.K, out var aDeg, out var cDeg))
-        {
-            if (IsNearZero(aDeg) && IsNearZero(cDeg))
-            {
-                return AxisMode.ThreeAxis;
-            }
-        }
-
-        return AxisMode.ThreePlusTwo;
-    }
+        => AnalyzeAxisMode(program.Blocks);
 
     private static AxisMode AnalyzeAxisMode(IReadOnlyList<IRBlock> blocks)
     {

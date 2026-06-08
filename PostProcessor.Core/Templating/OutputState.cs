@@ -45,6 +45,23 @@ internal sealed class OutputState
     public double CycleFedTo;
     public double? CycleFeedRate;
 
-    // 当前循环是否已输出“第一孔”的初始化（定位到 RAPTO + MCALL CYCLE...）
+    // 当前循环是否已输出”第一孔”的初始化（定位到 RAPTO + MCALL CYCLE...）
     public bool CycleInitialized;
+
+    // ── 层间 AC 重置（EnableLayerReset 开启时有效）──
+    public int LayerIndex;               // 当前工序层序号（0=未进入任何层）
+    public bool NeedsSaveLayerRef;       // 下一个带 IJK 的 jindao 运动需保存为层参考 AC
+    public double? CurrentLayerRefA;     // 当前层（或上一层）jindao 的参考 A，用于相邻层 IJK 相似度比较
+    public double? CurrentLayerRefC;     // 当前层（或上一层）jindao 的参考 C
+    public bool NeedsQieXueInit;         // 当前层 qiexue 需要从层参考初始化 AC
+
+    // ── F 自适应变速（EnableFAdaptive 开启时有效）──
+    public double? PrevSegmentR;          // 上一段的 r 值（Σ|ΔXYZ| / Σ|ΔAC|）
+    public double? PrevPointX;            // 上一行 X（用于段差计算）
+    public double? PrevPointY;            // 上一行 Y
+    public double? PrevPointZ;            // 上一行 Z
+    public double? PrevPointA;            // 上一行 A（解算前）
+    public double? PrevPointC;            // 上一行 C（解算前）
+    public double? OriginalSegmentF;      // 转弯降速前的原始 F，用于出弯恢复
+    public bool FReduced;                 // 当前是否已降速
 }

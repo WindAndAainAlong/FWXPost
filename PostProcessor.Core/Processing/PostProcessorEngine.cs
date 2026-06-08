@@ -28,7 +28,7 @@ public sealed class PostProcessorEngine
         var template = LoadTemplate(request.TemplatePath);
 
         // 3) 计算轴模式
-        var (axisMode, post) = ResolveAxisMode(program, request.EnableThreePlusTwoRotation);
+        var (axisMode, post) = ResolveAxisMode(program, request.EnableThreePlusTwoRotation, request.EnableLayerReset, request.EnableFAdaptive);
 
         // 4) 渲染模板
         var ncText = RenderTemplate(program, template, post, axisMode);
@@ -183,9 +183,9 @@ public sealed class PostProcessorEngine
         return TemplateDefinition.LoadFromFile(templatePath);
     }
 
-    private static (AxisMode AxisMode, TemplatePostProcessor Post) ResolveAxisMode(ToolpathProgram program, bool enableRotation)
+    private static (AxisMode AxisMode, TemplatePostProcessor Post) ResolveAxisMode(ToolpathProgram program, bool enableRotation, bool enableLayerReset, bool enableFAdaptive)
     {
-        var options = new PostOptions { EnableThreePlusTwoRotation = enableRotation };
+        var options = new PostOptions { EnableThreePlusTwoRotation = enableRotation, EnableLayerReset = enableLayerReset, EnableFAdaptive = enableFAdaptive };
         var post = new TemplatePostProcessor(options);
         var axisMode = post.GetAxisMode(program);
         return (axisMode, post);

@@ -184,22 +184,14 @@ internal static class TemplateContextFactory
             {
                 if (axisMode == AxisMode.FiveAxis)
                 {
-                    // 五轴：每孔输出 A/C，并做连续化（避免 C 大跳变）
-                    if (state.LastC.HasValue)
-                    {
-                        MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
-                    }
-                    else
-                    {
-                        // 首点无历史姿态时，先在等效解中选到 A0/C0 最短路径
-                        SelectInitialAcBranch(ref aDeg, ref cDeg);
-                    }
-                    dict["A"] = Format(aDeg);
-                    dict["C"] = Format(cDeg);
-                    dict["AField"] = "A" + Format(aDeg);
-                    dict["CField"] = "C" + Format(cDeg);
-                    state.LastA = aDeg;
-                    state.LastC = cDeg;
+                    ResolveFiveAxisAc(ref aDeg, ref cDeg, state, isJinDaoMotion: true);
+
+                    var aStr = Format(aDeg);
+                    var cStr = Format(cDeg);
+                    dict["A"] = aStr;
+                    dict["C"] = cStr;
+                    dict["AField"] = "A" + aStr;
+                    dict["CField"] = "C" + cStr;
                 }
                 else if (axisMode == AxisMode.ThreePlusTwo)
                 {
@@ -321,7 +313,7 @@ internal static class TemplateContextFactory
     /// 2) 3+2 旋转后的 XYZ/IJ
     /// 3) 去重字段（XField/YField/...）
     /// </summary>
-    public static Dictionary<string, string> BuildMotionContext(ToolpathProgram program, MotionBlock motion, OutputState state, AxisMode axisMode)
+    public static Dictionary<string, string> BuildMotionContext(ToolpathProgram program, MotionBlock motion, OutputState state, AxisMode axisMode, bool enableFAdaptive = false)
     {
         var dict = BuildHeaderContext(program);
 
@@ -330,6 +322,13 @@ internal static class TemplateContextFactory
         var zOut = motion.Z;
         var arcI = motion.ArcI;
         var arcJ = motion.ArcJ;
+
+        // F 自适应变速：在 AC 解算前捕获上行点位
+        var prevX = state.PrevPointX;
+        var prevY = state.PrevPointY;
+        var prevZ = state.PrevPointZ;
+        var prevA = state.PrevPointA;
+        var prevC = state.PrevPointC;
 
         // 进给值
         if (motion.FeedRate.HasValue)
@@ -368,23 +367,15 @@ internal static class TemplateContextFactory
             {
                 if (axisMode == AxisMode.FiveAxis)
                 {
-                    // 五轴：每条都输出 A/C
-                    if (state.LastC.HasValue)
-                    {
-                        // A/C 连续化：在等效解 (A,C) 与 (-A,C+180) 中选最接近上一行 C 的方案
-                        MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
-                    }
-                    else
-                    {
-                        // 首点无历史姿态时，先在等效解中选到 A0/C0 最短路径
-                        SelectInitialAcBranch(ref aDeg, ref cDeg);
-                    }
-                    dict["A"] = Format(aDeg);
-                    dict["C"] = Format(cDeg);
-                    dict["AField"] = "A" + Format(aDeg);
-                    dict["CField"] = "C" + Format(cDeg);
-                    state.LastA = aDeg;
-                    state.LastC = cDeg;
+                    ResolveFiveAxisAc(ref aDeg, ref cDeg, state,
+                        isJinDaoMotion: motion.PhaseType == ProcessPhaseType.JinDao);
+
+                    var aStr = Format(aDeg);
+                    var cStr = Format(cDeg);
+                    dict["A"] = aStr;
+                    dict["C"] = cStr;
+                    dict["AField"] = "A" + aStr;
+                    dict["CField"] = "C" + cStr;
                 }
                 else if (axisMode == AxisMode.ThreePlusTwo)
                 {
@@ -443,6 +434,66 @@ internal static class TemplateContextFactory
         // 3+2 状态标记
         dict["AxisLocked"] = state.AxisLocked ? "1" : "0";
         dict["AxisJustLocked"] = state.AxisJustLocked ? "1" : "0";
+
+        // F 自适应变速：仅切削阶段直线
+        if (enableFAdaptive && motion.Kind == MotionKind.Linear
+            && motion.PhaseType == ProcessPhaseType.QieXue
+            && prevX.HasValue && prevA.HasValue)
+        {
+            const double epsilon = 0.001;
+            var dx = Math.Abs(xOut - prevX!.Value);
+            var dy = Math.Abs(yOut - prevY!.Value);
+            var dz = Math.Abs(zOut - prevZ!.Value);
+            var da = Math.Abs(state.LastA!.Value - prevA!.Value);
+            var dc = Math.Abs(Math.IEEERemainder(state.LastC!.Value - prevC!.Value, 360.0));
+
+            var xyzSum = dx + dy + dz;
+            var acSum = da + dc;
+            var r = xyzSum / Math.Max(acSum, epsilon);
+
+            if (state.PrevSegmentR.HasValue)
+            {
+                var rPrev = state.PrevSegmentR.Value;
+                const double triggerRatio = 3.0;
+                const double fScale = 0.15;
+
+                if (!state.FReduced && rPrev / r > triggerRatio && motion.FeedRate.HasValue)
+                {
+                    // 进弯：r 骤降 → 降速
+                    state.OriginalSegmentF = motion.FeedRate.Value;
+                    var adjustedF = motion.FeedRate.Value * fScale;
+                    dict["FeedRate"] = Format(adjustedF);
+                    dict["FField"] = "F" + Format(adjustedF);
+                    state.FReduced = true;
+                    state.PrevSegmentR = null; // 跳过下一段比较，避免弯内连续触发
+                }
+                else if (state.FReduced && r / rPrev > triggerRatio && state.OriginalSegmentF.HasValue)
+                {
+                    // 出弯：r 骤升 → 恢复原 F
+                    var restoredF = state.OriginalSegmentF.Value;
+                    dict["FeedRate"] = Format(restoredF);
+                    dict["FField"] = "F" + Format(restoredF);
+                    state.OriginalSegmentF = null;
+                    state.FReduced = false;
+                    state.PrevSegmentR = null;
+                }
+                else
+                {
+                    state.PrevSegmentR = r;
+                }
+            }
+            else
+            {
+                state.PrevSegmentR = r;
+            }
+        }
+
+        // 保存本行点位供下一段差计算
+        state.PrevPointX = xOut;
+        state.PrevPointY = yOut;
+        state.PrevPointZ = zOut;
+        state.PrevPointA = state.LastA;
+        state.PrevPointC = state.LastC;
 
         return dict;
     }
@@ -517,6 +568,10 @@ internal static class TemplateContextFactory
         {
             cDeg = c1;
         }
+
+        // 归一化至 C 轴有效行程 [-360, 360]（delta 比较已用原始最近值完成，此处仅做边界归位）
+        if (cDeg > 360.0) cDeg -= 360.0;
+        else if (cDeg < -360.0) cDeg += 360.0;
     }
 
     private static double MakeContinuousC(double cDeg, double lastC)
@@ -551,16 +606,112 @@ internal static class TemplateContextFactory
 
     private static void ChooseCandidate(ref double best, ref double bestDelta, double candidate, double lastC)
     {
-        if (candidate < -360.0 || candidate > 360.0)
-        {
+        if (candidate < -540.0 || candidate > 540.0)
             return;
-        }
 
         var delta = Math.Abs(candidate - lastC);
         if (delta < bestDelta)
         {
             bestDelta = delta;
             best = candidate;
+        }
+    }
+
+    /// <summary>
+    /// 完整周期归一：用于层间重置功能，C 可超出 [-360, 360] 边界找到真正最近的等价角。
+    /// </summary>
+    private static double NormalizeCPeriodic(double angle, double target)
+    {
+        var diff = angle - target;
+        diff -= Math.Floor(diff / 360.0 + 0.5) * 360.0;
+        return target + diff;
+    }
+
+    /// <summary>
+    /// 五轴 AC 解算统一入口：（BuildMotionContext / BuildCycleHoleContext 共用）
+    /// 处理 NeedsSaveLayerRef / NeedsQieXueInit / MakeContinuousAc 三分支，更新 aDeg/cDeg 和 state。
+    /// </summary>
+    private static void ResolveFiveAxisAc(ref double aDeg, ref double cDeg, OutputState state, bool isJinDaoMotion)
+    {
+        if (state.NeedsSaveLayerRef && isJinDaoMotion)
+        {
+            const double sameGroupTolerance = 1.0;
+            var sameGroup = state.CurrentLayerRefA.HasValue;
+            if (sameGroup)
+            {
+                var rawCNearRef = NormalizeCPeriodic(cDeg, state.CurrentLayerRefC!.Value);
+                sameGroup = Math.Abs(aDeg - state.CurrentLayerRefA!.Value) < sameGroupTolerance
+                         && Math.Abs(rawCNearRef - state.CurrentLayerRefC!.Value) < sameGroupTolerance;
+            }
+
+            if (sameGroup)
+                SelectClosestToRef(ref aDeg, ref cDeg, state.CurrentLayerRefA!.Value, state.CurrentLayerRefC!.Value);
+            else
+                SelectInitialAcBranch(ref aDeg, ref cDeg);
+
+            state.CurrentLayerRefA = aDeg;
+            state.CurrentLayerRefC = cDeg;
+            state.NeedsSaveLayerRef = false;
+        }
+        else if (state.NeedsQieXueInit)
+        {
+            SelectClosestToRef(ref aDeg, ref cDeg, state.CurrentLayerRefA!.Value, state.CurrentLayerRefC!.Value);
+            state.NeedsQieXueInit = false;
+        }
+        else
+        {
+            if (state.LastC.HasValue)
+                MakeContinuousAc(ref aDeg, ref cDeg, state.LastC.Value);
+            else
+                SelectInitialAcBranch(ref aDeg, ref cDeg);
+        }
+
+        state.LastA = aDeg;
+        state.LastC = cDeg;
+    }
+
+    /// <summary>
+    /// 层间参考选解：在 (A,C) 与 (-A,C+180) 中选择离参考 AC 最近且 A/C 正负号均一致的解。
+    /// A 匹配优先于 C 匹配：当无解同时匹配时，优先保 A 正负号一致。
+    /// C 考虑完整周期（C + n*360），选择与 refC 绝对值最接近的周期等价解。
+    /// </summary>
+    private static void SelectClosestToRef(ref double aDeg, ref double cDeg, double refA, double refC)
+    {
+        var a1 = aDeg;
+        var a2 = -aDeg;
+
+        // C 考虑所有周期等价解（±360*n），取离 refC 最近的
+        var c1 = NormalizeCPeriodic(cDeg, refC);
+        var c2 = NormalizeCPeriodic(cDeg + 180.0, refC);
+
+        // A 同号：权重更高，优先保证
+        var refASign = Math.Sign(refA);
+        var a1Match = refASign == 0 || Math.Sign(a1) == refASign;
+        var a2Match = refASign == 0 || Math.Sign(a2) == refASign;
+
+        // C 同号（基于归一化后的 C 值）
+        var refCSign = Math.Sign(refC);
+        var c1Match = refCSign == 0 || Math.Sign(c1) == refCSign;
+        var c2Match = refCSign == 0 || Math.Sign(c2) == refCSign;
+
+        const double aPenalty = 2000.0;
+        const double cPenalty = 1000.0;
+
+        var penalty1 = (a1Match ? 0.0 : aPenalty) + (c1Match ? 0.0 : cPenalty);
+        var penalty2 = (a2Match ? 0.0 : aPenalty) + (c2Match ? 0.0 : cPenalty);
+
+        // deltaC 使用归一化后的值（已考虑所有周期等价解）
+        var cost1 = penalty1 + Math.Abs(c1 - refC);
+        var cost2 = penalty2 + Math.Abs(c2 - refC);
+
+        if (cost2 < cost1)
+        {
+            aDeg = a2;
+            cDeg = c2;
+        }
+        else
+        {
+            cDeg = c1;
         }
     }
 

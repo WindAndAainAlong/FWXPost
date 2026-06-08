@@ -75,7 +75,6 @@ public sealed class ClsParser
                 {
                     
                     currentPhase = phaseType;
-
                     blocks.Add(new ProcessPhaseBlock
                     {
                         Sequence = sequence++,
@@ -278,7 +277,6 @@ public sealed class ClsParser
                         Sequence = sequence++,
                         Kind = kind,
                         PhaseType = currentPhase,
-                     
                         X = pos.X,
                         Y = pos.Y,
                         Z = pos.Z,
@@ -307,9 +305,26 @@ public sealed class ClsParser
             return false;
         }
 
-        var text = line.ToLowerInvariant();
+        // UG CLS 格式：PAINT/COLOR,<数字>
+        //   186 → 进刀, 31 → 切削, 37 → 退刀
+        if (line.StartsWith("PAINT/COLOR,", StringComparison.OrdinalIgnoreCase))
+        {
+            var numText = line["PAINT/COLOR,".Length..].Trim();
+            if (int.TryParse(numText, out var colorNum))
+            {
+                phaseType = colorNum switch
+                {
+                    186 => ProcessPhaseType.JinDao,
+                    31  => ProcessPhaseType.QieXue,
+                    37  => ProcessPhaseType.TuiDao,
+                    _   => ProcessPhaseType.Unknown
+                };
+                return phaseType != ProcessPhaseType.Unknown;
+            }
+        }
 
-        // 英文拼音/常见中文关键词
+        // 兼容旧格式：拼音/中文关键词（后处理自定义 CLS）
+        var text = line.ToLowerInvariant();
         if (text.Contains("jindao", StringComparison.Ordinal) || text.Contains("进刀", StringComparison.Ordinal))
         {
             phaseType = ProcessPhaseType.JinDao;

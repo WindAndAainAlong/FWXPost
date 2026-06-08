@@ -11,7 +11,6 @@ namespace PostProcessor.Wpf;
 /// </summary>
 public partial class MainWindow : Window
 {
-    // Set this to false to disable 3+2 rotation and force 5-axis output for 3+2 toolpaths.
     private const bool EnableThreePlusTwoRotation = false;
 
     public MainWindow()
@@ -105,7 +104,9 @@ public partial class MainWindow : Window
             {
                 ClsPath = inputPath,
                 TemplatePath = templatePath,
-                EnableThreePlusTwoRotation = EnableThreePlusTwoRotation
+                EnableThreePlusTwoRotation = EnableThreePlusTwoRotation,
+                EnableLayerReset = LayerResetCheckBox.IsChecked == true,
+                EnableFAdaptive = FAdaptiveCheckBox.IsChecked == true
             };
 
             var result = engine.Generate(request);
